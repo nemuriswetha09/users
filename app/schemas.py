@@ -1,0 +1,21 @@
+from pydantic import BaseModel, EmailStr
+class EmployeeIn(BaseModel):
+    e_id: int
+    e_name: str
+    email: EmailStr
+    address1: str
+    address2: str
+    role: str
+    mobile: int
+    altMobile: int
+    latitude: float
+    longitude: float
+    physicalAddress: str
+    userStatus: str
+class EmployeeSummary(BaseModel):
+    e_id: int
+    e_name: str
+    email: str
+    userStatus: str
+    Username: str
+    Password: str
