@@ -12,9 +12,6 @@ mongo_uri = os.getenv("MONGO_URI")
 if not mongo_uri:
     raise ValueError("MONGO_URI not found in .env file")
 
-# Print Mongo URI to verify it was loaded correctly
-print(f"Mongo URI: {mongo_uri}")
-
 # Try connecting to MongoDB
 try:
     # Connect to MongoDB
