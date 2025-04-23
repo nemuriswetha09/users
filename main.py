@@ -9,6 +9,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from schemas import EmployeeIn, EmployeeSummary
 from database import collection
 from utils import generate_random_password, hash_password, encode_password_to_base64, generate_username
+from fastapi import HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body
+from bson.binary import Binary
+import base64
+from passlib.context import CryptContext
+import random
+import string
+
 
 app = FastAPI()
 
@@ -113,15 +121,70 @@ async def upload_csv(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Forgot password endpoint
+# Function for validation
+def is_valid_e_id(e_id: int) -> bool:
+    return isinstance(e_id, int) and e_id > 0
+ 
+ 
+
+
+# Initialize password context for bcrypt hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# Function to generate random password
+def generate_random_password(length: int = 10) -> str:
+    return ''.join(random.choices(string.ascii_letters + string.digits + string.punctuation, k=length))
+
+# Function to hash the password
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+# Function to check if the password is in Base64 binary format
+def is_binary_password(pw):
+    try:
+        if isinstance(pw, Binary):
+            return True
+        base64.b64decode(pw)
+        return False
+    except Exception:
+        return False
+# Password reset function
 @app.post("/forgot-password")
-async def forgot_password(e_name: str, e_id: int):
-    employee = await collection.find_one({"e_name": e_name, "e_id": e_id})
+async def forgot_password(e_name: str = Body(..., embed=True), e_id: int = Body(..., embed=True)):
+    # Clean up the name input
+    e_name = " ".join(e_name.strip().lower().split())
+
+    # Simulate employee database lookup
+    employee = await collection.find_one({
+        "e_name": {"$regex": f"^{e_name}$", "$options": "i"},
+        "e_id": e_id
+    })
+
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
 
+    # Get the old password from the database
+    old_password = employee.get("password")
+
+    # Check if the old password is in Binary or Base64 format
+    if isinstance(old_password, Binary) or is_binary_password(old_password):
+        print("Old password is in Binary/Base64 format")
+
+    # Generate a new plain password
+    new_plain_password = generate_random_password()
+
+    # Hash the new plain password
+    new_hashed_password = hash_password(new_plain_password)
+
+    # Update the employee's password with the new hashed password
+    await collection.update_one(
+        {"_id": employee["_id"]},
+        {"$set": {"password": new_hashed_password}}
+    )
+
+    # Return the plain password to the user (be cautious about returning this in production)
     return {
-        "message": "Password retrieved successfully",
+        "message": "Password reset successfully.",
         "username": employee.get("username"),
-        "plain_password": employee.get("plain_password")
+        "new_plain_password": new_plain_password  # Make sure you know the risks of sending this in response
     }
