@@ -18,7 +18,7 @@ try:
     client = AsyncIOMotorClient(mongo_uri)
 
     # Use your actual DB and collection names below
-    db = client["testRaider"]
+    db = client["recoverEase"]
     collection = db["testUsers"]
 
     # Check MongoDB server info to confirm connection

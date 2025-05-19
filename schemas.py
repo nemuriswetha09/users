@@ -1,7 +1,7 @@
 from pydantic import BaseModel, EmailStr
 class EmployeeIn(BaseModel):
-    e_id: int
-    e_name: str
+    E_ID: int
+    E_Name: str
     email: EmailStr
     address1: str
     address2: str
@@ -13,8 +13,8 @@ class EmployeeIn(BaseModel):
     physicalAddress: str
     userStatus: str
 class EmployeeSummary(BaseModel):
-    e_id: int
-    e_name: str
+    E_ID: int
+    E_Name: str
     email: str
     userStatus: str
     Username: str

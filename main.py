@@ -1,23 +1,18 @@
-import base64
 from datetime import datetime
-import random
 from io import StringIO
-from fastapi import FastAPI, File, UploadFile, HTTPException
-import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
-from schemas import EmployeeIn, EmployeeSummary
+from schemas import EmployeeIn
 from database import collection
-from utils import generate_random_password, hash_password, encode_password_to_base64, generate_username
-from fastapi import HTTPException, Body
-from fastapi import FastAPI, HTTPException, Body
-from bson.binary import Binary
-import base64
-from passlib.context import CryptContext
-import random
-import string
+from utils import generate_password_from_name,convert_to_mongodb_binary, hash_password_bcrypt, generate_username
+import pandas as pd
+import logging
 
+# Logging Setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
+# FastAPI App Initialization
 app = FastAPI()
 
 app.add_middleware(
@@ -28,55 +23,58 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Function to create an employee
-async def create_employee(emp: EmployeeIn):
-    # Generate username
-    username = generate_username(emp.e_name, emp.e_id)
-    
-    # Generate random password and hash it
-    plain_password = generate_random_password()
-    hashed_pw = hash_password(plain_password)
+# Create single employee record
+async def create_employee(emp: EmployeeIn) -> dict:
+    try:
+        username = generate_username(emp.E_Name, emp.E_ID)
+        
+        # Check username uniqueness
+        existing_user = await collection.find_one({"username": username})
+        if existing_user:
+            raise HTTPException(status_code=400, detail=f"Username {username} already exists")
+        
+        # Generate password using name_XXX format
+        plain_password = generate_password_from_name(emp.E_Name)
+        hashed_pw = hash_password_bcrypt(plain_password)
+        encoded_password = convert_to_mongodb_binary(hashed_pw)
 
-    # Convert the hashed password to Base64 binary format
-    binary_encoded_password = encode_password_to_base64(hashed_pw)
+        doc = emp.dict()
+        doc.update({
+            "username": username,
+            "password": encoded_password,
+            "activeTimestamp": datetime.now().strftime("%d/%m/%Y, %I:%M:%S %p"),
+            "currentDeviceID": "",
+            "currentSession": ""
+        })
 
-    # Add active timestamp and device ID
-    active_timestamp = datetime.now().strftime("%d/%m/%Y, %I:%M:%S %p")
-    current_device_id = ""  # Placeholder for current device ID initially
-    current_session = ""  # Placeholder for current session initially
+        await collection.insert_one(doc)
 
-    # Prepare document to insert into the database
-    doc = emp.dict()  # Converts to dict to insert into MongoDB
-    doc["username"] = username
-    doc["password"] = binary_encoded_password  # Store the Base64-encoded password
-    doc["activeTimestamp"] = active_timestamp
-    doc["currentDeviceID"] = current_device_id  # Placeholder for device ID
-    doc["currentSession"] = current_session  # Placeholder for session ID
-    # doc["plain_password"] = None  # Do not store the plain password
+        return {
+            "E_ID": emp.E_ID,
+            "E_Name": emp.E_Name,
+            "email": emp.email,
+            "userStatus": emp.userStatus,
+            "Username": username,
+            "Password": plain_password  # Returns the plain password for user reference
+        }
 
-    # Insert into MongoDB collection
-    result = await collection.insert_one(doc)
-    print("Inserted ID:", result.inserted_id)
+    except HTTPException:
+        # Re-raise HTTPException to preserve the status code and message
+        raise
+    except Exception as ex:
+        logger.error(f"Error creating employee {emp.E_ID}: {ex}")
+        raise HTTPException(status_code=500, detail="Internal server error while creating employee")
 
-    # Return employee summary (excluding plain password)
-    return {
-        "e_id": emp.e_id,
-        "e_name": emp.e_name,
-        "email": emp.email,
-        "userStatus": emp.userStatus,
-        "Username": username,
-        "Password": plain_password,  # Only include plain password in the response for the user
-    }
-
-# Single employee endpoint
+# Add employee via form
 @app.post("/add-employee")
 async def add_employee(emp: EmployeeIn):
     result = await create_employee(emp)
     return {
         "message": "Employee added successfully",
-        "employee_summary": result  # Return employee summary
+        "employee_summary": result
     }
-#  CSV bulk upload endpoint
+
+# Bulk add via CSV
 @app.post("/upload-csv")
 async def upload_csv(file: UploadFile = File(...)):
     if not file.filename.endswith(".csv"):
@@ -89,17 +87,14 @@ async def upload_csv(file: UploadFile = File(...)):
         df = pd.read_csv(csv_file)
 
         required_columns = {
-            "e_id", "e_name", "email", "address1", "address2",
+            "E_ID", "E_Name", "email", "address1", "address2",
             "role", "mobile", "altMobile", "latitude",
             "longitude", "physicalAddress", "userStatus"
         }
 
         if not required_columns.issubset(df.columns):
             missing = required_columns - set(df.columns)
-            raise HTTPException(
-                status_code=400,
-                detail=f"Missing required columns in CSV: {missing}"
-            )
+            raise HTTPException(status_code=400, detail=f"Missing columns: {missing}")
 
         employee_summaries = []
         failed_rows = []
@@ -110,81 +105,55 @@ async def upload_csv(file: UploadFile = File(...)):
                 result = await create_employee(employee_data)
                 employee_summaries.append(result)
             except Exception as e:
+                logger.warning(f"Failed to process row {index + 1}: {e}")
                 failed_rows.append({"row": index + 1, "error": str(e)})
 
         return {
-            "message": "CSV uploaded and processed successfully",
+            "message": "CSV processed",
             "employee_summaries": employee_summaries,
             "failed_rows": failed_rows
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Function for validation
-def is_valid_e_id(e_id: int) -> bool:
-    return isinstance(e_id, int) and e_id > 0
- 
- 
+        logger.error(f"CSV Upload Error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to process CSV file")
 
 
-# Initialize password context for bcrypt hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# Function to generate random password
-def generate_random_password(length: int = 10) -> str:
-    return ''.join(random.choices(string.ascii_letters + string.digits + string.punctuation, k=length))
 
-# Function to hash the password
-def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
-
-# Function to check if the password is in Base64 binary format
-def is_binary_password(pw):
-    try:
-        if isinstance(pw, Binary):
-            return True
-        base64.b64decode(pw)
-        return False
-    except Exception:
-        return False
-# Password reset function
+# Forgot Password API
 @app.post("/forgot-password")
-async def forgot_password(e_name: str = Body(..., embed=True), e_id: int = Body(..., embed=True)):
-    # Clean up the name input
-    e_name = " ".join(e_name.strip().lower().split())
+async def forgot_password(
+    E_Name: str = Body(..., embed=True),
+    E_ID: int = Body(..., embed=True)
+):
+    E_Name_cleaned = " ".join(E_Name.strip().lower().split())
 
-    # Simulate employee database lookup
     employee = await collection.find_one({
-        "e_name": {"$regex": f"^{e_name}$", "$options": "i"},
-        "e_id": e_id
+        "E_Name": {"$regex": f"^{E_Name_cleaned}$", "$options": "i"},
+        "E_ID": E_ID
     })
 
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
 
-    # Get the old password from the database
-    old_password = employee.get("password")
+    try:
+        # Generate new password using name_XXX format (same name, new 3 digits)
+        new_plain_password = generate_password_from_name(employee["E_Name"])
+        hashed_password_bytes = hash_password_bcrypt(new_plain_password)
+        base64_encoded_password = convert_to_mongodb_binary(hashed_password_bytes)
 
-    # Check if the old password is in Binary or Base64 format
-    if isinstance(old_password, Binary) or is_binary_password(old_password):
-        print("Old password is in Binary/Base64 format")
+        await collection.update_one(
+            {"_id": employee["_id"]},
+            {"$set": {"password": base64_encoded_password}}
+        )
 
-    # Generate a new plain password
-    new_plain_password = generate_random_password()
-
-    # Hash the new plain password
-    new_hashed_password = hash_password(new_plain_password)
-
-    # Update the employee's password with the new hashed password
-    await collection.update_one(
-        {"_id": employee["_id"]},
-        {"$set": {"password": new_hashed_password}}
-    )
-
-    # Return the plain password to the user (be cautious about returning this in production)
-    return {
-        "message": "Password reset successfully.",
-        "username": employee.get("username"),
-        "new_plain_password": new_plain_password  # Make sure you know the risks of sending this in response
-    }
+        return {
+            "message": "Password reset successfully.",
+            "username": employee.get("username"),
+            "new_plain_password": new_plain_password
+        }
+    except Exception as e:
+        logger.error(f"Password reset failed for {E_Name} (ID: {E_ID}): {e}")
+        raise HTTPException(status_code=500, detail="Failed to reset password")
+ 
