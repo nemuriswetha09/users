@@ -74,7 +74,7 @@ async def add_employee(emp: EmployeeIn):
         "employee_summary": result
     }
 
-# Bulk add via CSV
+# Bulk add via CSV  
 @app.post("/upload-csv")
 async def upload_csv(file: UploadFile = File(...)):
     if not file.filename.endswith(".csv"):
